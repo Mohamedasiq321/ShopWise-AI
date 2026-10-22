@@ -1,0 +1,42 @@
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+
+# Local datasets and databases
+data/raw/
+data/processed/
+*.db
+*.sqlite
+*.sqlite3
+
+# Local logs and temporary files
+*.log
+*.tmp
+*.bak
+*.backup
+*.accidental_backup
+*.pre_intent_backup
+
+# Operating system and IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
