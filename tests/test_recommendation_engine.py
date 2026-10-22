@@ -100,7 +100,13 @@ def test_gaming_mouse_search_excludes_headphones_and_earbuds(engine):
 
 def test_usb_c_cable_results_have_title_evidence(engine):
     results = engine.search("USB-C cable", max_budget=500, limit=10)
+def test_usb_c_cable_search_excludes_lightning_cables(engine):
+    results = engine.search("USB-C cable", max_budget=500, limit=10)
 
+    assert not results.empty
+    assert not results["product_name"].str.contains(
+        r"\blightning\b", case=False, regex=True, na=False
+    ).any()
     assert not results.empty
     for name in results["product_name"].str.lower():
         assert "cable" in name
@@ -151,3 +157,9 @@ def test_external_hard_drive_search_excludes_accessories(engine):
         assert not any(
             term in name for term in ("cable", "case", "caddy", "cover", "adapter")
         )
+
+def test_query_search_excludes_products_with_zero_text_relevance(engine):
+    results = engine.search("wireless mouse", limit=10)
+
+    assert not results.empty
+    assert (results["relevance_score"] > 0).all()

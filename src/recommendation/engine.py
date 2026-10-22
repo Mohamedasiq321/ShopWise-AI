@@ -121,7 +121,8 @@ class ProductRecommendationEngine:
             has_usb_c = re.search(
                 r"\b(?:usb[\s-]*c|type[\s-]*c)\b", name
             ) is not None
-            return has_cable and has_usb_c
+            is_lightning_cable = re.search(r"\blightning\b", name) is not None
+            return has_cable and has_usb_c and not is_lightning_cable
 
         if product_type == "webcam":
             has_camera = re.search(
