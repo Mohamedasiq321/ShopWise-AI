@@ -14,6 +14,19 @@ class QueryIntent:
 
 
 INTENT_RULES = [
+        {
+        "name": "wireless_keyboard",
+        "patterns": [
+            r"\bwireless\s+keyboards?\b",
+            r"\bkeyboards?\s+wireless\b",
+        ],
+        "required": ("keyboard",),
+        "excluded": ("keyboard cover", "keyboard case", "keycap"),
+        "message": (
+            "Prioritizing wireless keyboard listings; "
+            "combo sets may appear if the catalogue lacks standalone options."
+        ),
+    },
     {
         "name": "gaming_mouse",
         "patterns": [r"\bgaming\s+mouse\b", r"\bgaming\s+mice\b"],

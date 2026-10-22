@@ -150,6 +150,14 @@ class ProductRecommendationEngine:
             )
             return has_drive and has_portable_or_external
 
+        if product_type == "wireless_keyboard":
+             has_keyboard = re.search(r"\bkeyboards?\b", name) is not None
+             is_accessory = any(
+                term in name
+                for term in ("keyboard cover", "keyboard case", "keycap")
+            )
+             return has_keyboard and not is_accessory
+
         return True
 
 

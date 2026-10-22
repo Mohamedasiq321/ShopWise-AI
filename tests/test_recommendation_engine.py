@@ -163,3 +163,23 @@ def test_query_search_excludes_products_with_zero_text_relevance(engine):
 
     assert not results.empty
     assert (results["relevance_score"] > 0).all()
+
+def test_wireless_keyboard_search_returns_keyboard_products(engine):
+    results = engine.search("wireless keyboard", limit=10)
+
+    assert not results.empty
+    assert all(
+        "keyboard" in name.lower()
+        for name in results["product_name"]
+    )
+
+
+def test_wireless_keyboard_search_excludes_keyboard_accessories(engine):
+    results = engine.search("wireless keyboard", limit=10)
+
+    assert not results["product_name"].str.contains(
+        r"keyboard cover|keyboard case|keycap",
+        case=False,
+        regex=True,
+        na=False,
+    ).any()
