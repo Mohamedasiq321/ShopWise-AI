@@ -63,8 +63,12 @@ def dcg_at_k(grades, k):
 
 
 def ndcg_at_k(result_ids, labels, k):
-    """NDCG@k over the explicitly judged products for one query."""
-    observed_grades = [labels.get(product_id, 0) for product_id in result_ids[:k]]
+    """Calculate NDCG using explicitly judged relevance labels only."""
+    observed_grades = [
+        labels[product_id]
+        for product_id in result_ids[:k]
+        if product_id in labels
+    ]
     ideal_grades = sorted(labels.values(), reverse=True)[:k]
     ideal_dcg = dcg_at_k(ideal_grades, k)
 
@@ -86,27 +90,30 @@ def evaluate_query(engine, query, query_labels, k=TOP_K):
 
     results = engine.search(query, limit=k)
     result_ids = results["product_id"].astype(str).tolist()
-    result_grades = [labels.get(product_id, 0) for product_id in result_ids]
 
-    # Precision@k counts grade 1 or 2 as relevant, with fixed denominator k.
-    precision = sum(grade > 0 for grade in result_grades) / k
-
-    # MRR uses the first returned product with a positive manual relevance grade.
-    reciprocal_rank = 0.0
-    for rank, grade in enumerate(result_grades, start=1):
-        if grade > 0:
-            reciprocal_rank = 1.0 / rank
-            break
-
+    # Only explicitly judged results count toward judged precision.
+    judged_results = [
+        (product_id, labels[product_id])
+        for product_id in result_ids
+        if product_id in labels
+    ]
     judged_relevant_count = sum(grade > 0 for grade in labels.values())
-    found_judged_relevant = len(
-        {product_id for product_id in result_ids if labels.get(product_id, 0) > 0}
+    found_judged_relevant = sum(grade > 0 for _, grade in judged_results)
+
+    judged_precision = (
+        found_judged_relevant / len(judged_results)
+        if judged_results else None
     )
     judged_recall = (
         found_judged_relevant / judged_relevant_count
-        if judged_relevant_count
-        else None
+        if judged_relevant_count else None
     )
+
+    reciprocal_rank = 0.0
+    for rank, product_id in enumerate(result_ids, start=1):
+        if labels.get(product_id, 0) > 0:
+            reciprocal_rank = 1.0 / rank
+            break
 
     ndcg = ndcg_at_k(result_ids, labels, k)
 
@@ -115,7 +122,11 @@ def evaluate_query(engine, query, query_labels, k=TOP_K):
         "results_returned": len(results),
         "judged_products": len(labels),
         "judged_relevant_products": judged_relevant_count,
-        "precision_at_5": round(precision, 4),
+        "judged_results_returned": len(judged_results),
+        "judged_precision_at_5": (
+            round(judged_precision, 4)
+            if judged_precision is not None else None
+        ),
         "recall_at_5_among_judged_products": (
             round(judged_recall, 4) if judged_recall is not None else None
         ),
@@ -125,7 +136,7 @@ def evaluate_query(engine, query, query_labels, k=TOP_K):
             {
                 "product_id": str(row["product_id"]),
                 "product_name": str(row["product_name"]),
-                "manual_relevance_grade": labels.get(str(row["product_id"]), 0),
+                "manual_relevance_grade": labels.get(str(row["product_id"])),
                 "recommendation_score": round(
                     float(row["recommendation_score"]), 6
                 ),
@@ -133,8 +144,6 @@ def evaluate_query(engine, query, query_labels, k=TOP_K):
             for _, row in results.iterrows()
         ],
     }
-
-
 def mean_metric(results, key):
     values = [item[key] for item in results if item[key] is not None]
     if not values:
@@ -146,7 +155,6 @@ def main():
     engine = ProductRecommendationEngine()
     labels = load_labels(LABELS_PATH)
 
-    catalogue_ids = set(engine.products["product_id"].astype(str))
     evaluations = [
         evaluate_query(engine, query, query_labels)
         for query, query_labels in labels.items()
@@ -161,20 +169,21 @@ def main():
             "1": "partially relevant",
             "2": "highly relevant",
         },
-        "mean_precision_at_5": mean_metric(evaluations, "precision_at_5"),
+        "mean_judged_precision_at_5": mean_metric(
+            evaluations, "judged_precision_at_5"
+        ),
         "mean_recall_at_5_among_judged_products": mean_metric(
             evaluations, "recall_at_5_among_judged_products"
         ),
         "mean_mrr": mean_metric(evaluations, "mrr"),
         "mean_ndcg_at_5": mean_metric(evaluations, "ndcg_at_5"),
         "evaluation_note": (
-            "Metrics use manually supplied labels only. Unlabeled results are "
-            "treated as grade 0 for ranking metrics, so label coverage affects "
-            "the scores. Recall is limited to the judged set and is not full-catalogue recall."
+            "Unjudged products are excluded from judged precision and NDCG "
+            "gains; they are not treated as explicitly irrelevant. Recall "
+            "is limited to the manually judged set, not the full catalogue."
         ),
         "results": evaluations,
     }
-
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT_PATH.write_text(
         json.dumps(report, indent=2, ensure_ascii=False),
@@ -183,7 +192,10 @@ def main():
 
     print(f"Catalogue size: {report['catalogue_size']}")
     print(f"Queries evaluated: {report['queries_evaluated']}")
-    print(f"Mean Precision@5: {report['mean_precision_at_5']}")
+    print(
+    f"Mean Judged Precision@5: "
+    f"{report['mean_judged_precision_at_5']}"
+    )
     print(
         "Mean Recall@5 among judged products: "
         f"{report['mean_recall_at_5_among_judged_products']}"
@@ -195,7 +207,7 @@ def main():
         print(f"\nQuery: {item['query']}")
         print(
             f"Returned={item['results_returned']}, "
-            f"Precision@5={item['precision_at_5']}, "
+            f"Judged Precision@5={item['judged_precision_at_5']}, "
             f"Judged Recall@5={item['recall_at_5_among_judged_products']}, "
             f"MRR={item['mrr']}, NDCG@5={item['ndcg_at_5']}"
         )
