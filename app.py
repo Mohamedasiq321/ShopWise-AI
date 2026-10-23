@@ -196,13 +196,17 @@ with tab_compare:
                         "Description": "about_product",
                     }
 
+
                     table = comparison[
                         list(fields.values())
                     ].rename(
                         columns={column: label for label, column in fields.items()}
                     ).set_index("Product").T
 
-                    st.dataframe(table, use_container_width=True)
+                    st.dataframe(
+                        table.astype(str),
+                        use_container_width=True,
+                    )
 
                 except ValueError as exc:
                     st.error(str(exc))

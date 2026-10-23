@@ -1,4 +1,3 @@
-
 """Explainable product search and recommendation for ShopWise AI."""
 
 from pathlib import Path
@@ -48,6 +47,20 @@ class ProductRecommendationEngine:
         self.product_matrix = self.vectorizer.fit_transform(
             self.products["search_text"]
         )
+        self.title_matrix = self.vectorizer.transform(
+            self.products["product_name"].fillna("").astype(str).str.lower()
+        )
+
+        self.category_text = (
+            self.products["category"]
+            .fillna("")
+            .astype(str)
+            .str.replace(r"[&|]", " ", regex=True)
+            .str.replace(r"(?<=[a-z])(?=[A-Z])", " ", regex=True)
+            .str.lower()
+        )
+
+        self.category_matrix = self.vectorizer.transform(self.category_text)
 
     def _load_products(self):
         """Load product records without modifying the database."""
@@ -133,6 +146,24 @@ class ProductRecommendationEngine:
                 for term in ("cover", "privacy", "protector", "blocker")
             )
 
+        if product_type == "wireless_earbuds":
+            return (
+                re.search(r"\bearbuds?\b", name) is not None
+                and not any(
+                    term in name
+                    for term in ("earbud case", "earbud cover")
+                )
+            )
+
+        if product_type == "soundbar":
+            return (
+                re.search(r"\bsound\s*bars?\b", name) is not None
+                and not any(
+                    term in name
+                    for term in ("cover", "wall mount", "remote control")
+                )
+            )
+
         if product_type == "bluetooth_speaker":
             return (
                 "bluetooth" in name
@@ -150,16 +181,154 @@ class ProductRecommendationEngine:
             )
             return has_drive and has_portable_or_external
 
-        if product_type == "wireless_keyboard":
-             has_keyboard = re.search(r"\bkeyboards?\b", name) is not None
-             is_accessory = any(
+
+        if product_type == "wireless_keyboard_combo":
+            has_keyboard = re.search(r"\bkeyboards?\b", name) is not None
+            has_mouse = re.search(r"\bmouse\b", name) is not None
+
+            is_combo = any(
                 term in name
-                for term in ("keyboard cover", "keyboard case", "keycap")
+                for term in (
+                    "keyboard and mouse",
+                    "keyboard & mouse",
+                    "keyboard mouse combo",
+                    "keyboard combo",
+                    "keyboard and mouse set",
+                    "keyboard set",
+                )
             )
-             return has_keyboard and not is_accessory
+
+            has_wireless_signal = any(
+                term in name
+                for term in ("wireless", "bluetooth", "2.4ghz", "2.4 ghz")
+            )
+
+            return (
+                has_keyboard
+                and has_mouse
+                and is_combo
+                and has_wireless_signal
+                and "wired" not in name
+            )
+
+
+        if product_type == "wireless_keyboard":
+            has_keyboard = (
+                re.search(r"\bkeyboards?\b", name) is not None
+            )
+            has_wireless_signal = any(
+                term in name
+                for term in ("wireless", "bluetooth")
+            )
+            is_accessory = any(
+                term in name
+                for term in (
+                    "keyboard cover",
+                    "keyboard case",
+                    "keycap",
+                )
+            )
+            is_combo = (
+                "mouse" in name
+                and any(
+                    term in name
+                    for term in (
+                        "combo",
+                        "set",
+                        "keyboard and mouse",
+                        "keyboard & mouse",
+                    )
+                )
+            )
+
+            return (
+                has_keyboard
+                and has_wireless_signal
+                and not is_accessory
+                and not is_combo
+            )
+
 
         return True
 
+    @staticmethod
+    def _category_candidates(query, results):
+        """Filter clear product-type searches using normalized category leaves."""
+        import re
+
+        if results.empty or not query:
+            return results
+
+        def tokens(value):
+            value = str(value or "")
+            value = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", value)
+            value = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", " ", value)
+            value = value.lower().replace("mousepad", "mouse pad")
+            words = re.findall(r"[a-z0-9]+", value)
+            aliases = {
+                "mice": "mouse", "mouses": "mouse",
+                "keyboards": "keyboard", "cables": "cable",
+                "webcams": "webcam", "speakers": "speaker",
+                "adapters": "adapter", "drives": "drive",
+                "disks": "disk", "pads": "pad",
+                "earbuds": "earbud", "headphones": "headset", "headphone": "headset", "headsets": "headset", "headset": "headset",
+                "laptops": "laptop", "tablets": "tablet",
+                "monitors": "monitor", "printers": "printer",
+                "routers": "router", "chargers": "charger",
+                "hubs": "hub", "cases": "case", "covers": "cover",
+                "sets": "set", "gamepads": "gamepad",
+                "pendrives": "pendrive",
+                "chargers": "charger", "sleeves": "sleeve",
+                "bags": "bag", "mats": "mat", "covers": "cover",
+                "cases": "case", "accessories": "accessory",
+            }
+            return [aliases.get(word, word) for word in words]
+
+        ignored = {
+            "a", "an", "and", "for", "in", "of", "the", "to", "with",
+            "best", "cheap", "top", "product", "products", "buy", "under",
+        }
+        attributes = {
+            "wireless", "wired", "bluetooth", "gaming", "portable",
+            "external", "fast", "charging", "rechargeable", "silent",
+            "budget", "premium", "new",
+        }
+
+        query_tokens = set(tokens(query)) - ignored
+        requested = query_tokens - attributes
+        if not requested:
+            return results
+
+        leaves = results["category"].fillna("").astype(str).map(
+            lambda category: set(tokens(category.split("|")[-1]))
+        )
+        catalogue_vocabulary = set().union(*leaves.tolist()) if len(leaves) else set()
+        recognized = requested & catalogue_vocabulary
+
+        # If no catalogue category supports the query's product terms,
+        # leave the existing text search untouched.
+        if not recognized:
+            return results
+
+        accessory_terms = {
+            "accessory", "accessories", "pad", "mat", "case", "cover",
+            "protector", "set", "combo", "cable", "adapter", "dongle",
+            "mount", "sleeve", "bag", "caddy", "stand", "holder",
+            "replacement", "charger",
+        }
+        explicitly_requested = query_tokens
+        eligible = []
+
+        for leaf in leaves:
+            # Every recognized product-type term must match the category.
+            matches_type = recognized.issubset(leaf)
+            has_unrequested_accessory = bool(
+                (leaf & accessory_terms) - explicitly_requested
+            )
+            eligible.append(matches_type and not has_unrequested_accessory)
+
+        filtered = results.loc[eligible]
+        return filtered if not filtered.empty else results
 
     @staticmethod
     def _validate_budget(max_budget):
@@ -225,6 +394,8 @@ class ProductRecommendationEngine:
                 lambda name: self._matches_product_intent(name, intent)
             )
             results = results[matches_intent]
+        elif query:
+            results = self._category_candidates(query, results)
 
         if query and not results.empty:
             results = results[
@@ -247,9 +418,24 @@ class ProductRecommendationEngine:
 
         if query:
             query_vector = self.vectorizer.transform([query.lower()])
-            relevance = cosine_similarity(
+
+            title_relevance = cosine_similarity(
+                query_vector, self.title_matrix[positions]
+            ).ravel()
+
+            description_relevance = cosine_similarity(
                 query_vector, self.product_matrix[positions]
             ).ravel()
+
+            category_relevance = cosine_similarity(
+                query_vector, self.category_matrix[positions]
+            ).ravel()
+
+            relevance = (
+                0.60 * title_relevance
+                + 0.25 * description_relevance
+                + 0.15 * category_relevance
+            )
         else:
             relevance = [0.0] * len(results)
 

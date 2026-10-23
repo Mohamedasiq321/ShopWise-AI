@@ -14,17 +14,38 @@ class QueryIntent:
 
 
 INTENT_RULES = [
-        {
+    {
+        "name": "wireless_keyboard_combo",
+        "patterns": [
+            r"\bwireless\s+keyboard\s+(?:and|&|\+)\s+mouse\b",
+            r"\bkeyboard\s+(?:and|&|\+)\s+mouse\s+(?:combo|set)\b",
+            r"\bkeyboard\s+mouse\s+combo\b",
+            r"\bkeyboard\s+and\s+mouse\s+set\b",
+            r"\bwireless\s+keyboard\s+(?:combo|set)\b",
+        ],
+        "required": ("keyboard", "mouse"),
+        "excluded": ("keyboard cover", "keyboard case", "keycap"),
+        "message": "Prioritizing wireless keyboard-and-mouse combo products.",
+    },
+    {
         "name": "wireless_keyboard",
         "patterns": [
             r"\bwireless\s+keyboards?\b",
             r"\bkeyboards?\s+wireless\b",
         ],
         "required": ("keyboard",),
-        "excluded": ("keyboard cover", "keyboard case", "keycap"),
+        "excluded": (
+            "keyboard cover",
+            "keyboard case",
+            "keycap",
+            "keyboard and mouse",
+            "keyboard & mouse",
+            "keyboard combo",
+            "keyboard set",
+        ),
         "message": (
-            "Prioritizing wireless keyboard listings; "
-            "combo sets may appear if the catalogue lacks standalone options."
+            "Prioritizing standalone wireless keyboards; "
+            "use an explicit combo query for keyboard-and-mouse sets."
         ),
     },
     {
@@ -52,6 +73,27 @@ INTENT_RULES = [
         "required": ("webcam",),
         "excluded": ("cover", "privacy", "protector", "blocker"),
         "message": "Prioritizing actual webcam listings over privacy covers.",
+    },
+    {
+        "name": "wireless_earbuds",
+        "patterns": [
+            r"\bwireless\s+earbuds?\b",
+            r"\bbluetooth\s+earbuds?\b",
+            r"\b(?:tws|true\s+wireless)\s+earbuds?\b",
+        ],
+        "required": ("earbud",),
+        "excluded": ("earbud case", "earbud cover"),
+        "message": "Showing wireless earbud candidates only.",
+    },
+    {
+        "name": "soundbar",
+        "patterns": [
+            r"\bsound\s*bars?\b",
+            r"\bsoundbars?\b",
+        ],
+        "required": ("soundbar",),
+        "excluded": ("cover", "wall mount", "remote control"),
+        "message": "Prioritizing soundbar listings.",
     },
     {
         "name": "bluetooth_speaker",
