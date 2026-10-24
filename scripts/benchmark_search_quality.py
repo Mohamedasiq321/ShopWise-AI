@@ -40,6 +40,7 @@ from src.recommendation.engine import ProductRecommendationEngine
 
 LABELS_PATH = PROJECT_ROOT / "scripts" / "manual_relevance_labels.json"
 OUTPUT_PATH = PROJECT_ROOT / "data" / "processed" / "search_quality_benchmark.json"
+RECALL_K = 10
 TOP_K = 5
 
 
@@ -107,10 +108,11 @@ def condensed_ndcg_at_k(result_ids, labels, k):
     return dcg_at_k(observed_grades, k) / ideal_dcg
 
 
-def evaluate_query(engine, query, query_labels, k=TOP_K):
-    """Evaluate one query using only explicitly judged relevance labels."""
-    if k <= 0:
-        raise ValueError("k must be greater than zero.")
+
+def evaluate_query(engine, query, query_labels, k=TOP_K, recall_k=RECALL_K):
+    """Evaluate top-k ranking quality and recall at a deeper cutoff."""
+    if k <= 0 or recall_k < k:
+        raise ValueError("Require recall_k >= k > 0.")
 
     labels = {
         str(product_id): grade
@@ -125,58 +127,72 @@ def evaluate_query(engine, query, query_labels, k=TOP_K):
             f"Unknown product IDs for query {query!r}: {sorted(unknown_ids)}"
         )
 
-    results = engine.search(query, limit=k)
-    result_ids = results["product_id"].astype(str).tolist()
+    results = engine.search(query, limit=recall_k)
+    result_ids_at_10 = results["product_id"].astype(str).tolist()[:recall_k]
+    result_ids_at_5 = result_ids_at_10[:k]
 
-    judged_results = [
+    judged_results_at_5 = [
         (product_id, labels[product_id])
-        for product_id in result_ids
+        for product_id in result_ids_at_5
         if product_id in labels
     ]
 
-    judged_relevant_count = sum(
-        grade > 0 for grade in labels.values()
+    judged_relevant_count = sum(grade > 0 for grade in labels.values())
+
+    found_relevant_at_5 = sum(
+        grade > 0 for _, grade in judged_results_at_5
     )
-    found_judged_relevant = sum(
-        grade > 0 for _, grade in judged_results
+    found_relevant_at_10 = sum(
+        labels.get(product_id, 0) > 0
+        for product_id in result_ids_at_10
     )
 
     judged_precision = (
-        found_judged_relevant / len(judged_results)
-        if judged_results
+        found_relevant_at_5 / len(judged_results_at_5)
+        if judged_results_at_5
         else None
     )
 
-    judged_recall = (
-        found_judged_relevant / judged_relevant_count
+    judged_recall_at_5 = (
+        found_relevant_at_5 / judged_relevant_count
         if judged_relevant_count
         else None
     )
 
-    # MRR uses original result positions and judged relevant products only.
-    reciprocal_rank = 0.0
+    judged_recall_at_10 = (
+        found_relevant_at_10 / judged_relevant_count
+        if judged_relevant_count
+        else None
+    )
 
-    for rank, product_id in enumerate(result_ids, start=1):
+    # Preserve the original MRR@5 scope for comparability.
+    reciprocal_rank = 0.0
+    for rank, product_id in enumerate(result_ids_at_5, start=1):
         if labels.get(product_id, 0) > 0:
             reciprocal_rank = 1.0 / rank
             break
 
-    condensed_ndcg = condensed_ndcg_at_k(result_ids, labels, k)
+    condensed_ndcg = condensed_ndcg_at_k(result_ids_at_5, labels, k)
 
     return {
         "query": query,
-        "results_returned": len(results),
+        "results_returned": len(result_ids_at_10),
         "judged_products": len(labels),
         "judged_relevant_products": judged_relevant_count,
-        "judged_results_returned": len(judged_results),
+        "judged_results_returned": len(judged_results_at_5),
         "judged_precision_at_5": (
             round(judged_precision, 4)
             if judged_precision is not None
             else None
         ),
         "recall_at_5_among_judged_products": (
-            round(judged_recall, 4)
-            if judged_recall is not None
+            round(judged_recall_at_5, 4)
+            if judged_recall_at_5 is not None
+            else None
+        ),
+        "recall_at_10_among_judged_products": (
+            round(judged_recall_at_10, 4)
+            if judged_recall_at_10 is not None
             else None
         ),
         "mrr": round(reciprocal_rank, 4),
@@ -196,7 +212,7 @@ def evaluate_query(engine, query, query_labels, k=TOP_K):
                     float(row["recommendation_score"]), 6
                 ),
             }
-            for _, row in results.iterrows()
+            for _, row in results.head(k).iterrows()
         ],
     }
 
@@ -240,6 +256,9 @@ def main():
         "mean_recall_at_5_among_judged_products": mean_metric(
             evaluations, "recall_at_5_among_judged_products"
         ),
+        "mean_recall_at_10_among_judged_products": mean_metric(
+    evaluations, "recall_at_10_among_judged_products"
+),
         "mean_mrr": mean_metric(evaluations, "mrr"),
         "mean_condensed_ndcg_at_5": mean_metric(
             evaluations, "condensed_ndcg_at_5"
@@ -271,6 +290,10 @@ def main():
         "Mean Recall@5 among judged products: "
         f"{report['mean_recall_at_5_among_judged_products']}"
     )
+    print(
+    "Mean Recall@10 among judged products: "
+    f"{report['mean_recall_at_10_among_judged_products']}"
+)
     print(f"Mean MRR: {report['mean_mrr']}")
     print(
         "Mean Condensed NDCG@5: "
