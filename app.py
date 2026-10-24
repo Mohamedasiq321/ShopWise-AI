@@ -1,7 +1,10 @@
+"""ShopWise AI: product discovery, comparison, and alternatives."""
 
-"""ShopWise AI — interactive product discovery and comparison."""
+import math
 
 import streamlit as st
+import urllib.error
+import urllib.request
 
 from src.recommendation.engine import ProductRecommendationEngine
 
@@ -16,16 +19,78 @@ st.set_page_config(
 
 @st.cache_resource
 def load_engine():
+    """Create and cache the recommendation engine."""
     return ProductRecommendationEngine()
+
+
+def is_valid_number(value):
+    """Return True for finite numeric values, excluding NaN and infinity."""
+    if value is None or isinstance(value, bool):
+        return False
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(number)
+
+
+def product_label(name, product_id, max_length=85):
+    """Create a readable, unique product label for selection widgets."""
+    text = str(name or "Product").strip()
+    if len(text) > max_length:
+        text = text[: max_length - 1].rstrip() + "..."
+    return f"{text} | ID: {product_id}"
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_product_image(url):
+    """Fetch and cache an image; return None if it cannot be loaded."""
+    if not isinstance(url, str) or not url.startswith("https://"):
+        return None
+
+    request = urllib.request.Request(
+        url,
+        headers={"User-Agent": "ShopWiseAI/1.0"},
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=3) as response:
+            content_type = response.headers.get("Content-Type", "")
+            if not content_type.lower().startswith("image/"):
+                return None
+
+            data = response.read(5 * 1024 * 1024 + 1)
+            if len(data) > 5 * 1024 * 1024:
+                return None
+
+            if data:
+                return data
+
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+        return None
+
+    return None
 
 
 engine = load_engine()
 
-st.title("🛍️ ShopWise AI")
+st.title("ShopWise AI")
 st.caption(
     "Find products, compare options, and explore alternatives "
     "using transparent, data-driven recommendations."
 )
+
+with st.expander("What can you shop for?", expanded=False):
+    st.markdown(
+        "ShopWise AI currently focuses on **computers and accessories**."
+    )
+    st.caption(
+        "Try mice, keyboards, mousepads, USB cables, laptop sleeves, "
+        "chargers, webcams, or storage devices."
+    )
+    st.caption(
+        "Clothing, shoes, and other unsupported categories may not be "
+        "available in the current catalogue."
+    )
 
 with st.sidebar:
     st.header("Shopping preferences")
@@ -36,7 +101,7 @@ with st.sidebar:
     )
 
     max_budget = st.number_input(
-        "Maximum budget (₹)",
+        "Maximum budget (INR)",
         min_value=0,
         max_value=100000,
         value=0,
@@ -64,7 +129,7 @@ with st.sidebar:
         use_container_width=True,
     )
 
-# Keep the current search results available to the comparison workflow.
+# Keep search results available when the user switches tabs.
 if "shopwise_results" not in st.session_state:
     st.session_state.shopwise_results = None
 
@@ -73,21 +138,21 @@ if "shopwise_query" not in st.session_state:
 
 if search_clicked:
     try:
-        results = engine.search(
-            query=query,
+        found_results = engine.search(
+            query=query.strip(),
             max_budget=max_budget if max_budget > 0 else None,
             min_rating=min_rating if min_rating > 0 else None,
             limit=result_limit,
         )
-        st.session_state.shopwise_results = results
-        st.session_state.shopwise_query = query
+        st.session_state.shopwise_results = found_results
+        st.session_state.shopwise_query = query.strip()
     except (ValueError, RuntimeError) as exc:
         st.error(f"Unable to search products: {exc}")
 
 results = st.session_state.shopwise_results
 
 tab_discover, tab_compare, tab_alternatives = st.tabs(
-    ["🔎 Discover", "⚖️ Compare", "🔄 Alternatives"]
+    ["Discover", "Compare", "Alternatives"]
 )
 
 with tab_discover:
@@ -96,14 +161,21 @@ with tab_discover:
     if results is None:
         st.info(
             "Enter a product or feature in the sidebar and select "
-            "**Find products**. You can also leave the query blank "
-            "to browse highly rated products."
+            "**Find products**. Leave the query blank to browse products."
         )
+
     elif results.empty:
-        st.warning(
-            "No products matched those filters. Try a different "
-            "search term, a higher budget, or a lower rating."
+        st.warning("No matching products found.")
+        st.markdown(
+            "**Try one of these searches:** "
+            "`wireless mouse`, `keyboard`, `USB-C cable`, "
+            "`laptop sleeve`, or `webcam`."
         )
+        st.caption(
+            "You can also increase your budget, lower the minimum rating, "
+            "or clear your search to browse available products."
+        )
+
     else:
         st.write(f"Showing **{len(results)}** matching products.")
 
@@ -112,53 +184,69 @@ with tab_discover:
                 left, right = st.columns([4, 1])
 
                 with left:
-                    st.markdown(f"### {product['product_name']}")
+                    raw_name = product.get("product_name", "Product")
+                    name = str(raw_name) if raw_name is not None else "Product"
+                    if len(name) > 100:
+                        name = name[:97].rstrip() + "..."
+                    st.markdown(f"### {name}")
 
-                    price = product["discounted_price_inr"]
-                    actual_price = product["actual_price_inr"]
-                    rating = product["rating"]
-                    discount = product["discount_percentage"]
+                    price = product.get("discounted_price_inr")
+                    actual_price = product.get("actual_price_inr")
+                    rating = product.get("rating")
+                    discount = product.get("discount_percentage")
 
-                    if price == price:
-                        st.markdown(f"**Price: ₹{price:,.2f}**")
+                    if is_valid_number(price):
+                        st.markdown(f"**Price: INR {float(price):,.0f}**")
+                    else:
+                        st.markdown("**Price: Not available**")
 
-                    details = []
-
-                    if rating == rating:
-                        details.append(f"⭐ {rating:.1f}/5")
-
-                    if discount == discount:
-                        details.append(f"{discount:.0f}% listed discount")
-
-                    if details:
-                        st.caption(" · ".join(details))
-
-                    description = str(product["about_product"] or "").strip()
-                    if description:
-                        st.write(
-                            description[:500]
-                            + ("…" if len(description) > 500 else "")
-                        )
-
-                    st.caption(str(product["explanation"]))
-
-                    product_url = str(product["product_link"] or "").strip()
-                    if product_url.startswith(("https://", "http://")):
-                        st.markdown(f"[View product page]({product_url})")
-
-                with right:
-                    st.metric(
-                        "Match score",
-                        f"{product['recommendation_score']:.3f}",
-                    )
+                    metrics = []
+                    if is_valid_number(rating):
+                        metrics.append(f"Rating: {float(rating):.1f}/5")
+                    if is_valid_number(discount) and float(discount) > 0:
+                        metrics.append(f"{float(discount):.0f}% off")
+                    if metrics:
+                        st.caption(" | ".join(metrics))
 
                     if (
-                        price == price
-                        and actual_price == actual_price
-                        and actual_price > 0
+                        is_valid_number(actual_price)
+                        and is_valid_number(price)
+                        and float(actual_price) > float(price)
                     ):
-                        savings = actual_price - price
-                        st.caption(f"Listed savings: ₹{savings:,.2f}")
+                        savings = float(actual_price) - float(price)
+                        st.caption(f"You save: INR {savings:,.0f}")
+
+                    description = product.get("about_product")
+                    if isinstance(description, str) and description.strip():
+                        with st.expander("Product details"):
+                            st.write(description)
+                    explanation = product.get("explanation")
+                    if explanation:
+                        st.caption(str(explanation))
+
+                    product_url = product.get("product_link")
+                    if (
+                        isinstance(product_url, str)
+                        and product_url.startswith("https://")
+                    ):
+                        st.markdown(
+                            f"[View product on seller's page]({product_url})"
+                        )
+
+                with right:
+                    score = product.get("recommendation_score")
+                    if is_valid_number(score):
+                        st.metric("Match score", f"{float(score):.3f}")
+                    image_url = product.get("img_link")
+                    image_data = fetch_product_image(image_url)
+
+                    if image_data:
+                        st.image(
+                            image_data,
+                            use_container_width=True,
+                        )
+                    else:
+                        st.caption("Image unavailable")
 
 with tab_compare:
     st.subheader("Compare products")
@@ -166,10 +254,10 @@ with tab_compare:
     if results is None or results.empty:
         st.info("Search for products first, then select products to compare.")
     else:
-        available = {
-            f"{row.product_name[:100]} — {row.product_id}": row.product_id
-            for row in results.itertuples()
-        }
+        available = {}
+        for row in results.itertuples(index=False):
+            label = product_label(row.product_name, row.product_id)
+            available[label] = row.product_id
 
         selected_labels = st.multiselect(
             "Select two or three products",
@@ -189,27 +277,38 @@ with tab_compare:
 
                     fields = {
                         "Product": "product_name",
-                        "Price (₹)": "discounted_price_inr",
-                        "Actual price (₹)": "actual_price_inr",
+                        "Price (INR)": "discounted_price_inr",
+                        "Actual price (INR)": "actual_price_inr",
                         "Rating": "rating",
                         "Discount (%)": "discount_percentage",
                         "Description": "about_product",
                     }
 
-
+                    available_fields = {
+                        label: column
+                        for label, column in fields.items()
+                        if column in comparison.columns
+                    }
                     table = comparison[
-                        list(fields.values())
+                        list(available_fields.values())
                     ].rename(
-                        columns={column: label for label, column in fields.items()}
-                    ).set_index("Product").T
+                        columns={
+                            column: label
+                            for label, column in available_fields.items()
+                        }
+                    )
+
+                    if "Product" in table.columns:
+                        table = table.set_index("Product").T
 
                     st.dataframe(
                         table.astype(str),
                         use_container_width=True,
+                        height=320,
                     )
 
-                except ValueError as exc:
-                    st.error(str(exc))
+                except (ValueError, KeyError, RuntimeError) as exc:
+                    st.error(f"Unable to compare products: {exc}")
 
 with tab_alternatives:
     st.subheader("Find alternatives")
@@ -217,10 +316,10 @@ with tab_alternatives:
     if results is None or results.empty:
         st.info("Search for a product first to explore similar alternatives.")
     else:
-        choices = {
-            f"{row.product_name[:100]} — {row.product_id}": row.product_id
-            for row in results.itertuples()
-        }
+        choices = {}
+        for row in results.itertuples(index=False):
+            label = product_label(row.product_name, row.product_id)
+            choices[label] = row.product_id
 
         selected_label = st.selectbox(
             "Choose a product",
@@ -229,7 +328,7 @@ with tab_alternatives:
         )
 
         alternative_budget = st.number_input(
-            "Alternative budget limit (₹)",
+            "Alternative budget limit (INR)",
             min_value=0,
             max_value=100000,
             value=0,
@@ -243,7 +342,9 @@ with tab_alternatives:
                 alternatives = engine.alternatives(
                     choices[selected_label],
                     max_budget=(
-                        alternative_budget if alternative_budget > 0 else None
+                        alternative_budget
+                        if alternative_budget > 0
+                        else None
                     ),
                     limit=5,
                 )
@@ -253,35 +354,82 @@ with tab_alternatives:
                         "No similar alternatives found under those constraints."
                     )
                 else:
+                    desired_columns = [
+                        "product_name",
+                        "discounted_price_inr",
+                        "rating",
+                        "similarity_score",
+                        "alternative_score",
+                    ]
+                    display = alternatives[
+                        [
+                            column
+                            for column in desired_columns
+                            if column in alternatives.columns
+                        ]
+                    ].rename(
+                        columns={
+                            "product_name": "Product",
+                            "discounted_price_inr": "Price (INR)",
+                            "rating": "Rating",
+                            "similarity_score": "Text similarity",
+                            "alternative_score": "Alternative score",
+                        }
+                    ).copy()
+
+                    if "Product" in display.columns:
+                        display["Product"] = (
+                            display["Product"]
+                            .astype(str)
+                            .str.slice(0, 76)
+                            .where(
+                                display["Product"].astype(str).str.len() <= 76,
+                                display["Product"].astype(str).str.slice(0, 73) + "...",
+                            )
+                        )
+
+                    column_config = {}
+                    if "Price (INR)" in display.columns:
+                        column_config["Price (INR)"] = (
+                            st.column_config.NumberColumn(
+                                "Price (INR)",
+                                format="INR %.0f",
+                            )
+                        )
+                    if "Rating" in display.columns:
+                        column_config["Rating"] = st.column_config.NumberColumn(
+                            "Rating",
+                            format="%.1f",
+                        )
+                    if "Text similarity" in display.columns:
+                        column_config["Text similarity"] = (
+                            st.column_config.NumberColumn(
+                                "Text similarity",
+                                format="%.2f",
+                            )
+                        )
+                    if "Alternative score" in display.columns:
+                        column_config["Alternative score"] = (
+                            st.column_config.NumberColumn(
+                                "Alternative score",
+                                format="%.2f",
+                            )
+                        )
+
                     st.dataframe(
-                        alternatives[
-                            [
-                                "product_name",
-                                "discounted_price_inr",
-                                "rating",
-                                "similarity_score",
-                                "alternative_score",
-                            ]
-                        ].rename(
-                            columns={
-                                "product_name": "Product",
-                                "discounted_price_inr": "Price (₹)",
-                                "rating": "Rating",
-                                "similarity_score": "Text similarity",
-                                "alternative_score": "Alternative score",
-                            }
-                        ),
+                        display,
                         use_container_width=True,
                         hide_index=True,
+                        column_config=column_config,
                     )
 
                     st.caption(
-                        "Similarity scores are based on product text and price "
-                        "proximity, not verified feature equivalence."
+                        "Similarity scores use product text and price proximity; "
+                        "they do not guarantee equivalent features."
                     )
 
-            except ValueError as exc:
-                st.error(str(exc))
+            except (ValueError, KeyError, RuntimeError) as exc:
+                st.error(f"Unable to find alternatives: {exc}")
 
 st.divider()
 st.caption(
