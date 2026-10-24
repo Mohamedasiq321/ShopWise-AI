@@ -1,4 +1,4 @@
-"""Explainable product search and recommendation for ShopWise AI."""
+﻿"""Explainable product search and recommendation for ShopWise AI."""
 
 from pathlib import Path
 import sqlite3
@@ -141,10 +141,17 @@ class ProductRecommendationEngine:
             has_camera = re.search(
                 r"\b(?:webcams?|web\s+cameras?)\b", name
             ) is not None
-            return has_camera and not any(
-                term in name
-                for term in ("cover", "privacy", "protector", "blocker")
-            )
+
+            is_standalone_accessory = re.search(
+                r"\b(?:webcam|web\s+camera)\s+"
+                r"(?:cover|protector|blocker)\b"
+                r"|\bcamera\s+privacy\s+covers?\b"
+                r"|\bprivacy\s+covers?\b"
+                r"|\bcover\s+slide\b",
+                name,
+            ) is not None
+
+            return has_camera and not is_standalone_accessory
 
         if product_type == "wireless_earbuds":
             return (

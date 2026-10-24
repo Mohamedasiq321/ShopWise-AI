@@ -1,3 +1,4 @@
+import re
 import pytest
 
 from src.recommendation.engine import ProductRecommendationEngine
@@ -90,10 +91,23 @@ def test_usb_c_cable_search_excludes_lightning_cables(engine):
 
 
 def test_webcam_search_excludes_privacy_accessories(engine):
-    results = engine.search("webcam", max_budget=3000, limit=10)
+    results = engine.search("webcam", max_budget=3000, limit=20)
+
+    accessory_patterns = (
+        r"\bwebcam\s+cover\b",
+        r"\bweb\s+camera\s+cover\b",
+        r"\bcamera\s+privacy\s+covers?\b",
+        r"\bprivacy\s+covers?\b",
+        r"\bwebcam\s+(?:protector|blocker)\b",
+        r"\bcover\s+slide\b",
+    )
+
     for name in results["product_name"].str.lower():
         assert "webcam" in name or "web camera" in name
-        assert not any(term in name for term in ("cover", "privacy", "protector", "blocker"))
+        assert not any(
+            re.search(pattern, name)
+            for pattern in accessory_patterns
+        )
 
 
 def test_bluetooth_speaker_search_does_not_return_unrelated_products(engine):
@@ -237,3 +251,13 @@ def test_webcam_with_builtin_privacy_shutter_is_not_an_accessory(engine):
 
     assert len(products) == 1
     assert engine._alternative_family(products.iloc[0]) == "webcam"
+
+def test_webcam_with_builtin_privacy_shutter_is_searchable(engine):
+    results = engine.search("webcam", max_budget=3000, limit=20)
+
+    assert results["product_name"].str.contains(
+        "Lenovo 300 FHD Webcam",
+        case=False,
+        regex=False,
+        na=False,
+    ).any()

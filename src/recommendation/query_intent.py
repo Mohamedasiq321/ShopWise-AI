@@ -67,12 +67,20 @@ INTENT_RULES = [
         "excluded": (),
         "message": "Prioritizing cable listings with USB-C/Type-C evidence.",
     },
-    {
+        {
         "name": "webcam",
         "patterns": [r"\bwebcams?\b", r"\bweb\s+cameras?\b"],
         "required": ("webcam",),
-        "excluded": ("cover", "privacy", "protector", "blocker"),
-        "message": "Prioritizing actual webcam listings over privacy covers.",
+        "excluded": (
+            "webcam cover",
+            "web camera cover",
+            "camera privacy cover",
+            "privacy cover",
+            "webcam protector",
+            "webcam blocker",
+            "cover slide",
+        ),
+        "message": "Prioritizing actual webcams over standalone privacy accessories.",
     },
     {
         "name": "wireless_earbuds",
