@@ -519,8 +519,133 @@ class ProductRecommendationEngine:
             .reset_index()
         )
 
+
+
+    @staticmethod
+    def _alternative_family(product):
+        """Classify products into compatible alternative families."""
+        import re
+
+        name = str(product.get("product_name", "") or "").lower()
+        category = str(product.get("category", "") or "")
+        leaf = category.split("|")[-1]
+
+        leaf = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", leaf)
+        leaf = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", " ", leaf)
+        leaf = re.sub(r"[&_/]+", " ", leaf)
+        leaf = re.sub(r"\s+", " ", leaf).strip().lower()
+
+        combined = f"{leaf} {name}"
+
+                # Exclude adapters and other accessories before device keyword matching.
+        if re.search(
+            r"\b(?:bluetooth|wireless|usb)\s+adapters?\b"
+            r"|\bdongles?\b"
+            r"|\b(?:receivers?|transmitters?)\b",
+            name,
+        ):
+            return "accessory"
+
+        # Classify accessories before devices mentioned in their names.
+
+        # Trust the specific product category before accessory keywords
+        # appearing in a device's marketing description.
+        if "webcams" in leaf:
+            return "webcam"
+
+        if re.search(
+            r"\b(?:webcam|web\s*camera)\s+(?:cover|blocker|protector)\b"
+            r"|\b(?:camera\s*privacy\s*covers?|privacy\s*covers?)\b"
+            r"|\bcover\s+slide\b",
+            combined,
+        ) or "camera privacy covers" in combined:
+            return "webcam_accessory"
+
+        if re.search(
+            r"\bkeyboard\b.*\b(?:covers?|protectors?|skins?)\b"
+            r"|\bkeycaps?\b|\bdust\s*covers?\b",
+            combined,
+        ):
+            return "keyboard_accessory"
+
+        if re.search(
+            r"\bmouse\s*pad\b|\bmouse\s*mat\b|\bmousepad\b",
+            combined,
+        ):
+            return "mousepad"
+
+        if re.search(
+            r"\blaptop\s+sleeves?\b|\bslipcases?\b",
+            combined,
+        ):
+            return "laptop_sleeve"
+
+        # Keep keyboard-and-mouse sets separate from standalone keyboards.
+        if (
+            "keyboard" in combined
+            and re.search(r"\bmouse\b", name)
+            and re.search(
+                r"\b(?:combo|set)\b"
+                r"|keyboard\s*(?:and|&|\+)\s*mouse",
+                name,
+            )
+        ):
+            return "keyboard_mouse_combo"
+
+        # Distinguish wireless, wired, and unspecified standalone keyboards.
+        if "keyboard" in leaf or re.search(r"\bkeyboard\b", name):
+            if re.search(
+                r"\bwireless\b|\bbluetooth\b|\b2\.4\s*ghz\b",
+                name,
+            ):
+                return "wireless_keyboard"
+
+            if re.search(r"\bwired\b", name):
+                return "wired_keyboard"
+
+            return "keyboard"
+
+        # Accessories have already been excluded above.
+        if re.search(r"\b(?:web\s*cameras?|webcams?)\b", combined):
+            return "webcam"
+
+        if re.search(r"\b(?:gaming\s+)?mice\b|\bmouse\b", combined):
+            return "mouse"
+
+        if "cable" in combined:
+            if re.search(r"\b(?:usb[\s-]*c|type[\s-]*c)\b", name):
+                return "usb_c_cable"
+            if "lightning" in name:
+                return "lightning_cable"
+            if re.search(r"\bmicro[\s-]*usb\b", name):
+                return "micro_usb_cable"
+            return "cable"
+
+        if re.search(r"\bearbuds?\b", combined):
+            return "earbuds"
+
+        if re.search(r"\bsound\s*bars?\b", combined):
+            return "soundbar"
+
+        if re.search(r"\bspeakers?\b", combined):
+            return "speaker"
+
+        if re.search(r"\bheadphones?\b|\bheadsets?\b", combined):
+            return "headset"
+
+        if re.search(
+            r"\b(?:external|portable)\s+(?:hard\s+)?(?:drive|disk)\b"
+            r"|\bhdd\b",
+            combined,
+        ):
+            return "external_storage"
+
+        # Conservative fallback: use the normalized category leaf.
+        return f"category:{leaf}" if leaf else None
+
+
     def alternatives(self, product_id, max_budget=None, limit=5):
-        """Find textually similar alternatives, excluding the source product."""
+        """Recommend compatible products, ranked by similarity and price."""
         budget = self._validate_budget(max_budget)
 
         if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
@@ -533,46 +658,73 @@ class ProductRecommendationEngine:
         if matches.empty:
             raise ValueError(f"Unknown product ID: {product_id}")
 
+        source = matches.iloc[0]
         source_index = matches.index[0]
-        source_price = matches.iloc[0]["discounted_price_inr"]
+        source_family = self._alternative_family(source)
 
-        similarities = cosine_similarity(
-            self.product_matrix[source_index],
-            self.product_matrix,
-        ).ravel()
+        candidates = self.products[
+            self.products["product_id"] != str(product_id)
+        ].copy()
 
-        candidates = self.products.copy()
-        candidates["similarity_score"] = similarities
+        # Never recommend cross-family products just to fill the result list.
+        if source_family is None:
+            return candidates.iloc[0:0].assign(
+                similarity_score=pd.Series(dtype=float),
+                price_difference_ratio=pd.Series(dtype=float),
+                alternative_score=pd.Series(dtype=float),
+            )
+
+        candidates["alternative_family"] = candidates.apply(
+            self._alternative_family, axis=1
+        )
         candidates = candidates[
-            candidates["product_id"] != str(product_id)
-        ]
+            candidates["alternative_family"] == source_family
+        ].copy()
 
         if budget is not None:
             candidates = candidates[
                 candidates["discounted_price_inr"].notna()
                 & (candidates["discounted_price_inr"] <= budget)
-            ]
+            ].copy()
 
-        if source_price and pd.notna(source_price) and source_price > 0:
+        if candidates.empty:
+            return candidates.assign(
+                similarity_score=pd.Series(dtype=float),
+                price_difference_ratio=pd.Series(dtype=float),
+                alternative_score=pd.Series(dtype=float),
+            )
+
+        similarities = cosine_similarity(
+            self.product_matrix[source_index],
+            self.product_matrix[candidates.index.to_numpy()],
+        ).ravel()
+
+        candidates["similarity_score"] = similarities
+        candidates = candidates[candidates["similarity_score"] > 0].copy()
+
+        source_price = source["discounted_price_inr"]
+
+        if pd.notna(source_price) and source_price > 0:
             candidates["price_difference_ratio"] = (
                 (candidates["discounted_price_inr"] - source_price).abs()
                 / source_price
-            )
+            ).clip(0, 1)
+
+            price_score = (
+                1 - candidates["price_difference_ratio"]
+            ).fillna(0)
+
             candidates["alternative_score"] = (
                 0.8 * candidates["similarity_score"]
-                + 0.2 * (
-                    1 - candidates["price_difference_ratio"].clip(0, 1)
-                ).fillna(0)
+                + 0.2 * price_score
             )
         else:
             candidates["price_difference_ratio"] = float("nan")
             candidates["alternative_score"] = candidates["similarity_score"]
-
-        candidates = candidates[candidates["similarity_score"] > 0]
 
         return candidates.sort_values(
             ["alternative_score", "rating", "product_id"],
             ascending=[False, False, True],
             na_position="last",
             kind="stable",
-        ).head(limit).reset_index(drop=True)
+        ).drop(columns=["alternative_family"]).head(limit).reset_index(drop=True)

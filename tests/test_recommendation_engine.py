@@ -187,3 +187,53 @@ def test_wireless_keyboard_combo_search_returns_combo_products(engine):
         assert any(term in name for term in ("combo", "set", "keyboard and mouse", "keyboard & mouse"))
         assert any(term in name for term in ("wireless", "bluetooth", "2.4ghz", "2.4 ghz"))
         assert "wired" not in name
+
+def test_wireless_keyboard_alternatives_exclude_wired_keyboards_and_combos(engine):
+    results = engine.search("wireless keyboard", limit=10)
+    assert not results.empty
+
+    source = results.iloc[0]
+    alternatives = engine.alternatives(source["product_id"], limit=10)
+
+    for _, product in alternatives.iterrows():
+        name = product["product_name"].lower()
+        category = product["category"].lower()
+
+        assert "keyboard" in name
+        assert "wireless" in name or "bluetooth" in name
+        assert "keyboard&mousesets" not in category
+        assert "keyboard and mouse" not in name
+        assert "keyboard & mouse" not in name
+        assert "combo" not in name
+
+
+def test_webcam_alternatives_exclude_privacy_covers(engine):
+    results = engine.search("webcam", limit=10)
+    assert not results.empty
+
+    source = results.iloc[0]
+    alternatives = engine.alternatives(source["product_id"], limit=10)
+
+    for _, product in alternatives.iterrows():
+        name = product["product_name"].lower()
+        category = product["category"].lower()
+
+        assert "webcam" in name or "web camera" in name
+        assert "camera privacy covers" not in category
+        assert not any(
+            term in name
+            for term in ("webcam cover", "privacy protector", "cover slide")
+        )
+
+def test_webcam_with_builtin_privacy_shutter_is_not_an_accessory(engine):
+    products = engine.products[
+        engine.products["product_name"].str.contains(
+            "Lenovo 300 FHD Webcam",
+            case=False,
+            regex=False,
+            na=False,
+        )
+    ]
+
+    assert len(products) == 1
+    assert engine._alternative_family(products.iloc[0]) == "webcam"
