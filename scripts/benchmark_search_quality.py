@@ -1,3 +1,4 @@
+
 """Evaluate ShopWise AI ranking with manually graded product relevance.
 
 Relevance grades:
@@ -7,6 +8,23 @@ Relevance grades:
 
 The product database is loaded through ProductRecommendationEngine's read-only
 SQLite connection. This script writes only the evaluation report.
+
+Metric definitions:
+    Judged Precision@5:
+        Relevant explicitly judged results / explicitly judged results returned.
+        Unjudged results are excluded from the denominator.
+
+    Recall@5 among judged products:
+        Relevant judged results retrieved / all manually judged relevant products.
+
+    MRR:
+        Reciprocal rank of the first explicitly judged relevant result.
+        Original result positions are preserved; unjudged results are not
+        assumed irrelevant.
+
+    Condensed NDCG@5:
+        Unjudged results are removed before calculating DCG. This is a
+        condensed-ranking metric, not standard NDCG over the original ranking.
 """
 
 import json
@@ -39,13 +57,17 @@ def load_labels(path):
     for query, query_labels in labels.items():
         if not isinstance(query, str) or not query.strip():
             raise ValueError("Every label entry must have a non-empty query.")
+
         if not isinstance(query_labels, dict) or not query_labels:
             raise ValueError(
-                f"Labels for {query!r} must be a non-empty product-ID-to-grade object."
+                f"Labels for {query!r} must be a non-empty "
+                "product-ID-to-grade object."
             )
+
         for product_id, grade in query_labels.items():
             if not isinstance(product_id, str) or not product_id.strip():
                 raise ValueError(f"Invalid product ID for query {query!r}.")
+
             if isinstance(grade, bool) or grade not in (0, 1, 2):
                 raise ValueError(
                     f"Grade for {query!r} / {product_id!r} must be 0, 1, or 2."
@@ -55,20 +77,27 @@ def load_labels(path):
 
 
 def dcg_at_k(grades, k):
-    """Discounted cumulative gain using graded relevance and gain 2**grade - 1."""
+    """Calculate discounted cumulative gain using gain 2**grade - 1."""
+    if k <= 0:
+        return 0.0
+
     return sum(
         (2**grade - 1) / math.log2(rank + 1)
         for rank, grade in enumerate(grades[:k], start=1)
     )
 
 
-def ndcg_at_k(result_ids, labels, k):
-    """Calculate NDCG using explicitly judged relevance labels only."""
+def condensed_ndcg_at_k(result_ids, labels, k):
+    """Calculate NDCG after removing unjudged results from the ranking."""
+    if k <= 0:
+        return None
+
     observed_grades = [
         labels[product_id]
         for product_id in result_ids[:k]
         if product_id in labels
     ]
+
     ideal_grades = sorted(labels.values(), reverse=True)[:k]
     ideal_dcg = dcg_at_k(ideal_grades, k)
 
@@ -79,10 +108,18 @@ def ndcg_at_k(result_ids, labels, k):
 
 
 def evaluate_query(engine, query, query_labels, k=TOP_K):
-    labels = {str(product_id): grade for product_id, grade in query_labels.items()}
+    """Evaluate one query using only explicitly judged relevance labels."""
+    if k <= 0:
+        raise ValueError("k must be greater than zero.")
+
+    labels = {
+        str(product_id): grade
+        for product_id, grade in query_labels.items()
+    }
 
     catalogue_ids = set(engine.products["product_id"].astype(str))
     unknown_ids = set(labels) - catalogue_ids
+
     if unknown_ids:
         raise ValueError(
             f"Unknown product IDs for query {query!r}: {sorted(unknown_ids)}"
@@ -91,31 +128,40 @@ def evaluate_query(engine, query, query_labels, k=TOP_K):
     results = engine.search(query, limit=k)
     result_ids = results["product_id"].astype(str).tolist()
 
-    # Only explicitly judged results count toward judged precision.
     judged_results = [
         (product_id, labels[product_id])
         for product_id in result_ids
         if product_id in labels
     ]
-    judged_relevant_count = sum(grade > 0 for grade in labels.values())
-    found_judged_relevant = sum(grade > 0 for _, grade in judged_results)
+
+    judged_relevant_count = sum(
+        grade > 0 for grade in labels.values()
+    )
+    found_judged_relevant = sum(
+        grade > 0 for _, grade in judged_results
+    )
 
     judged_precision = (
         found_judged_relevant / len(judged_results)
-        if judged_results else None
-    )
-    judged_recall = (
-        found_judged_relevant / judged_relevant_count
-        if judged_relevant_count else None
+        if judged_results
+        else None
     )
 
+    judged_recall = (
+        found_judged_relevant / judged_relevant_count
+        if judged_relevant_count
+        else None
+    )
+
+    # MRR uses original result positions and judged relevant products only.
     reciprocal_rank = 0.0
+
     for rank, product_id in enumerate(result_ids, start=1):
         if labels.get(product_id, 0) > 0:
             reciprocal_rank = 1.0 / rank
             break
 
-    ndcg = ndcg_at_k(result_ids, labels, k)
+    condensed_ndcg = condensed_ndcg_at_k(result_ids, labels, k)
 
     return {
         "query": query,
@@ -125,18 +171,27 @@ def evaluate_query(engine, query, query_labels, k=TOP_K):
         "judged_results_returned": len(judged_results),
         "judged_precision_at_5": (
             round(judged_precision, 4)
-            if judged_precision is not None else None
+            if judged_precision is not None
+            else None
         ),
         "recall_at_5_among_judged_products": (
-            round(judged_recall, 4) if judged_recall is not None else None
+            round(judged_recall, 4)
+            if judged_recall is not None
+            else None
         ),
         "mrr": round(reciprocal_rank, 4),
-        "ndcg_at_5": round(ndcg, 4) if ndcg is not None else None,
+        "condensed_ndcg_at_5": (
+            round(condensed_ndcg, 4)
+            if condensed_ndcg is not None
+            else None
+        ),
         "top_results": [
             {
                 "product_id": str(row["product_id"]),
                 "product_name": str(row["product_name"]),
-                "manual_relevance_grade": labels.get(str(row["product_id"])),
+                "manual_relevance_grade": labels.get(
+                    str(row["product_id"])
+                ),
                 "recommendation_score": round(
                     float(row["recommendation_score"]), 6
                 ),
@@ -144,14 +199,24 @@ def evaluate_query(engine, query, query_labels, k=TOP_K):
             for _, row in results.iterrows()
         ],
     }
+
+
 def mean_metric(results, key):
-    values = [item[key] for item in results if item[key] is not None]
+    """Calculate the mean of available metric values."""
+    values = [
+        item[key]
+        for item in results
+        if item[key] is not None
+    ]
+
     if not values:
         return None
+
     return round(sum(values) / len(values), 4)
 
 
 def main():
+    """Run the search-quality benchmark and save its JSON report."""
     engine = ProductRecommendationEngine()
     labels = load_labels(LABELS_PATH)
 
@@ -176,14 +241,20 @@ def main():
             evaluations, "recall_at_5_among_judged_products"
         ),
         "mean_mrr": mean_metric(evaluations, "mrr"),
-        "mean_ndcg_at_5": mean_metric(evaluations, "ndcg_at_5"),
+        "mean_condensed_ndcg_at_5": mean_metric(
+            evaluations, "condensed_ndcg_at_5"
+        ),
         "evaluation_note": (
-            "Unjudged products are excluded from judged precision and NDCG "
-            "gains; they are not treated as explicitly irrelevant. Recall "
-            "is limited to the manually judged set, not the full catalogue."
+            "Judged precision excludes unjudged returned products. "
+            "Condensed NDCG removes unjudged products from the retrieved "
+            "ranking before scoring; it is not standard NDCG over the "
+            "original ranking. MRR uses original result positions and "
+            "counts only explicitly judged relevant products. Recall is "
+            "limited to the manually judged set, not the full catalogue."
         ),
         "results": evaluations,
     }
+
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT_PATH.write_text(
         json.dumps(report, indent=2, ensure_ascii=False),
@@ -193,24 +264,30 @@ def main():
     print(f"Catalogue size: {report['catalogue_size']}")
     print(f"Queries evaluated: {report['queries_evaluated']}")
     print(
-    f"Mean Judged Precision@5: "
-    f"{report['mean_judged_precision_at_5']}"
+        "Mean Judged Precision@5: "
+        f"{report['mean_judged_precision_at_5']}"
     )
     print(
         "Mean Recall@5 among judged products: "
         f"{report['mean_recall_at_5_among_judged_products']}"
     )
     print(f"Mean MRR: {report['mean_mrr']}")
-    print(f"Mean NDCG@5: {report['mean_ndcg_at_5']}")
+    print(
+        "Mean Condensed NDCG@5: "
+        f"{report['mean_condensed_ndcg_at_5']}"
+    )
 
     for item in evaluations:
         print(f"\nQuery: {item['query']}")
         print(
             f"Returned={item['results_returned']}, "
             f"Judged Precision@5={item['judged_precision_at_5']}, "
-            f"Judged Recall@5={item['recall_at_5_among_judged_products']}, "
-            f"MRR={item['mrr']}, NDCG@5={item['ndcg_at_5']}"
+            f"Judged Recall@5="
+            f"{item['recall_at_5_among_judged_products']}, "
+            f"MRR={item['mrr']}, "
+            f"Condensed NDCG@5={item['condensed_ndcg_at_5']}"
         )
+
         for rank, product in enumerate(item["top_results"], start=1):
             print(
                 f"  {rank}. grade={product['manual_relevance_grade']} "
