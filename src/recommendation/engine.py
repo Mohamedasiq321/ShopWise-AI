@@ -1,8 +1,8 @@
 ﻿
 """Explainable product search and recommendation for ShopWise AI."""
-
-from pathlib import Path
 import sqlite3
+from contextlib import closing
+from pathlib import Path
 
 import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -86,38 +86,46 @@ class ProductRecommendationEngine:
         """Load product records without modifying the database."""
         uri = self.db_path.resolve().as_uri() + "?mode=ro"
 
-        with sqlite3.connect(uri, uri=True) as connection:
-            products = pd.read_sql_query(
-                """
-                SELECT
-                    p.product_id,
-                    p.product_name,
-                    p.category,
-                    p.discounted_price_inr,
-                    p.actual_price_inr,
-                    p.discount_percentage,
-                    p.rating,
-                    p.rating_count,
-                    p.about_product,
-                    p.img_link,
-                    p.product_link,
-                    COALESCE(r.review_text, '') AS review_text
-                FROM products AS p
-                LEFT JOIN (
+        try:
+            with closing(sqlite3.connect(uri, uri=True)) as connection:
+                products = pd.read_sql_query(
+                    """
                     SELECT
-                        product_id,
-                        GROUP_CONCAT(
-                            COALESCE(review_title_raw, '') || ' ' ||
-                            COALESCE(review_content_without_urls, ''),
-                            ' '
-                        ) AS review_text
-                    FROM review_source_records
-                    GROUP BY product_id
-                ) AS r ON r.product_id = p.product_id
-                ORDER BY p.product_id
-                """,
-                connection,
-            )
+                        p.product_id,
+                        p.product_name,
+                        p.category,
+                        p.discounted_price_inr,
+                        p.actual_price_inr,
+                        p.discount_percentage,
+                        p.rating,
+                        p.rating_count,
+                        p.about_product,
+                        p.img_link,
+                        p.product_link,
+                        COALESCE(r.review_text, '') AS review_text
+                    FROM products AS p
+                    LEFT JOIN (
+                        SELECT
+                            product_id,
+                            GROUP_CONCAT(
+                                COALESCE(review_title_raw, '') || ' ' ||
+                                COALESCE(review_content_without_urls, ''),
+                                ' '
+                            ) AS review_text
+                        FROM review_source_records
+                        GROUP BY product_id
+                    ) AS r ON r.product_id = p.product_id
+                    ORDER BY p.product_id
+                    """,
+                    connection,
+                )
+        except (sqlite3.Error, pd.errors.DatabaseError) as exc:
+            raise ValueError(
+                f"Unable to load the product database at "
+                f"'{self.db_path}'. The database may be unreadable, "
+                "corrupt, or missing required tables. "
+                "Restore a valid database and follow the README setup instructions."
+            ) from exc
 
         numeric_columns = [
             "discounted_price_inr",

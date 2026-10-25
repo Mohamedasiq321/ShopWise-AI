@@ -32,6 +32,8 @@ Place the CSV file at:
 
 `data/raw/amazon.csv`
 
+The raw dataset, processed data, and SQLite database are excluded from Git. Prepare the data and build the database locally before launching the application.
+
 ### 3. Generate processed data
 
 From the project root, run:
@@ -72,7 +74,7 @@ Open the local URL shown in the terminal.
 python -m pytest -q
 ```
 
-The current test suite contains 20 automated tests.
+The current test suite contains 64 automated tests. Run `python -m pytest -q` to verify the suite.
 
 ## Current Scope
 
@@ -89,7 +91,7 @@ The current catalogue contains 375 unique product listings across 57 stored cate
 
 ## Project Status
 
-The local application supports product search, comparison, and alternative recommendations. Broader catalogue coverage, a reproducible deployment setup, and public deployment remain future tasks.
+The local application supports product search, comparison, and alternative recommendations. The SQLite database is not committed to Git, so a deployment must provision a valid catalogue separately. Broader catalogue coverage, reproducible deployment, and public deployment remain future tasks.
 
 ---
 

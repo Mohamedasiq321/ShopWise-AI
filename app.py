@@ -132,7 +132,18 @@ def fetch_product_image(url):
     return None
 
 
-engine = load_engine()
+try:
+    engine = load_engine()
+except (FileNotFoundError, ValueError) as exc:
+    st.error(
+        "ShopWise AI could not load its product catalogue. "
+        f"{exc}"
+    )
+    st.info(
+        "Check the database path and required tables. "
+        "Follow the README setup instructions to restore a valid catalogue."
+    )
+    st.stop()
 
 st.title("ShopWise AI")
 st.caption(

@@ -1,8 +1,9 @@
 import re
+import sqlite3
+
 import pytest
 
 from src.recommendation.engine import ProductRecommendationEngine
-
 
 @pytest.fixture(scope="module")
 def engine():
@@ -314,3 +315,31 @@ def test_review_only_term_retrieves_product_with_matching_review(engine):
     raise AssertionError(
         "Could not find a review-only term that retrieves its associated product."
     )
+
+
+def test_missing_database_raises_clear_error(tmp_path):
+    missing_db = tmp_path / "missing.db"
+
+    with pytest.raises(
+        FileNotFoundError,
+        match="Product database not found",
+    ):
+        ProductRecommendationEngine(db_path=missing_db)
+
+
+def test_incompatible_database_schema_raises_clear_error(tmp_path):
+    wrong_db = tmp_path / "wrong_schema.db"
+
+    connection = sqlite3.connect(wrong_db)
+    try:
+        connection.execute(
+            "CREATE TABLE unrelated (id INTEGER PRIMARY KEY)"
+        )
+    finally:
+        connection.close()
+
+    with pytest.raises(
+        ValueError,
+        match="Unable to load the product database",
+    ):
+        ProductRecommendationEngine(db_path=wrong_db)
