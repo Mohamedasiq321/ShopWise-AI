@@ -261,3 +261,56 @@ def test_webcam_with_builtin_privacy_shutter_is_searchable(engine):
         regex=False,
         na=False,
     ).any()
+def test_review_only_term_retrieves_product_with_matching_review(engine):
+    from sklearn.metrics.pairwise import cosine_similarity
+
+    analyzer = engine.vectorizer.build_analyzer()
+
+    product_tokens = set()
+    for text in engine.products["search_text"].fillna("").astype(str):
+        product_tokens.update(analyzer(text))
+
+    review_tokens = set()
+    for text in engine.products["review_text"].fillna("").astype(str):
+        review_tokens.update(analyzer(text))
+
+    candidates = sorted(
+        token
+        for token in review_tokens - product_tokens
+        if len(token) >= 5 and token.isalpha()
+    )
+
+    for term in candidates:
+        query_vector = engine.vectorizer.transform([term])
+        if query_vector.nnz == 0:
+            continue
+
+        matching_products = engine.products[
+            engine.products["review_text"].apply(
+                lambda text: term in analyzer(str(text))
+            )
+        ]
+
+        for _, product in matching_products.iterrows():
+            product_id = str(product["product_id"])
+            results = engine.search(term, limit=len(engine.products))
+
+            if results.empty or product_id not in results["product_id"].astype(str).values:
+                continue
+
+            product_position = engine.products.index[
+                engine.products["product_id"].astype(str) == product_id
+            ][0]
+
+            review_score = cosine_similarity(
+                query_vector,
+                engine.review_matrix[product_position],
+            )[0, 0]
+
+            if review_score > 0:
+                assert product_id in results["product_id"].astype(str).values
+                return
+
+    raise AssertionError(
+        "Could not find a review-only term that retrieves its associated product."
+    )

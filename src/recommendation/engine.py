@@ -1,4 +1,5 @@
-﻿"""Explainable product search and recommendation for ShopWise AI."""
+﻿
+"""Explainable product search and recommendation for ShopWise AI."""
 
 from pathlib import Path
 import sqlite3
@@ -29,6 +30,13 @@ class ProductRecommendationEngine:
         if self.products.empty:
             raise ValueError("The product database contains no products.")
 
+        self.products["review_text"] = (
+            self.products["review_text"]
+            .fillna("")
+            .astype(str)
+            .str.lower()
+        )
+
         self.products["search_text"] = (
             self.products["product_name"].fillna("").astype(str)
             + " "
@@ -44,9 +52,21 @@ class ProductRecommendationEngine:
             sublinear_tf=True,
         )
 
-        self.product_matrix = self.vectorizer.fit_transform(
-            self.products["search_text"]
+        # Build one vocabulary from product information and review text.
+        corpus = pd.concat(
+            [
+                self.products["search_text"],
+                self.products["review_text"],
+            ],
+            ignore_index=True,
         )
+
+        corpus_matrix = self.vectorizer.fit_transform(corpus)
+        product_count = len(self.products)
+
+        self.product_matrix = corpus_matrix[:product_count]
+        self.review_matrix = corpus_matrix[product_count:]
+
         self.title_matrix = self.vectorizer.transform(
             self.products["product_name"].fillna("").astype(str).str.lower()
         )
@@ -70,19 +90,31 @@ class ProductRecommendationEngine:
             products = pd.read_sql_query(
                 """
                 SELECT
-                    product_id,
-                    product_name,
-                    category,
-                    discounted_price_inr,
-                    actual_price_inr,
-                    discount_percentage,
-                    rating,
-                    rating_count,
-                    about_product,
-                    img_link,
-                    product_link
-                FROM products
-                ORDER BY product_id
+                    p.product_id,
+                    p.product_name,
+                    p.category,
+                    p.discounted_price_inr,
+                    p.actual_price_inr,
+                    p.discount_percentage,
+                    p.rating,
+                    p.rating_count,
+                    p.about_product,
+                    p.img_link,
+                    p.product_link,
+                    COALESCE(r.review_text, '') AS review_text
+                FROM products AS p
+                LEFT JOIN (
+                    SELECT
+                        product_id,
+                        GROUP_CONCAT(
+                            COALESCE(review_title_raw, '') || ' ' ||
+                            COALESCE(review_content_without_urls, ''),
+                            ' '
+                        ) AS review_text
+                    FROM review_source_records
+                    GROUP BY product_id
+                ) AS r ON r.product_id = p.product_id
+                ORDER BY p.product_id
                 """,
                 connection,
             )
@@ -106,7 +138,6 @@ class ProductRecommendationEngine:
         )
 
         return products
-
 
     @staticmethod
     def _matches_product_intent(product_name, intent):
@@ -404,12 +435,24 @@ class ProductRecommendationEngine:
         elif query:
             results = self._category_candidates(query, results)
 
+
         if query and not results.empty:
-            results = results[
+            positions = results.index.to_numpy()
+
+            product_matches = (
                 self.vectorizer.transform(
                     results["search_text"]
                 ).getnnz(axis=1) > 0
-            ]
+            )
+
+            review_matches = (
+                self.review_matrix[positions].multiply(
+                    self.vectorizer.transform([query.lower()])
+                ).getnnz(axis=1) > 0
+            )
+
+            results = results[product_matches | review_matches]
+
 
         if results.empty:
 
@@ -434,17 +477,23 @@ class ProductRecommendationEngine:
                 query_vector, self.product_matrix[positions]
             ).ravel()
 
+            review_relevance = cosine_similarity(
+                query_vector, self.review_matrix[positions]
+            ).ravel()
+
             category_relevance = cosine_similarity(
                 query_vector, self.category_matrix[positions]
             ).ravel()
 
             relevance = (
-                0.60 * title_relevance
-                + 0.25 * description_relevance
+                0.55 * title_relevance
+                + 0.20 * description_relevance
+                + 0.10 * review_relevance
                 + 0.15 * category_relevance
             )
         else:
             relevance = [0.0] * len(results)
+
 
         # Ratings are normalized to [0, 1]. Missing ratings receive 0.
         rating_score = (

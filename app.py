@@ -7,6 +7,7 @@ import urllib.error
 import urllib.request
 
 from src.recommendation.engine import ProductRecommendationEngine
+from src.recommendation.decision_snapshot import build_decision_snapshot
 
 
 st.set_page_config(
@@ -23,8 +24,68 @@ def load_engine():
     return ProductRecommendationEngine()
 
 
+
+import re
+
+
 def is_valid_number(value):
     """Return True for finite numeric values, excluding NaN and infinity."""
+    if value is None or isinstance(value, bool):
+        return False
+
+    try:
+        return math.isfinite(float(value))
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+def get_review_insights(review_text, query="", max_insights=3):
+    """Extract short, query-relevant excerpts from stored review text."""
+    if not isinstance(review_text, str) or not review_text.strip():
+        return []
+
+    # The source data may concatenate review records, so avoid
+    # presenting fragments as independently verified reviews.
+    text = re.sub(r"\s+", " ", review_text).strip()
+    segments = re.split(r"(?<=[.!?])\s+", text)
+
+    query_terms = {
+        term.lower()
+        for term in re.findall(r"[a-zA-Z0-9]+", query)
+        if len(term) >= 3
+    }
+
+    candidates = []
+    seen = set()
+
+    for segment in segments:
+        segment = segment.strip(" ,;|")
+        if len(segment) < 20:
+            continue
+
+        normalized = segment.lower()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+
+        terms = set(re.findall(r"[a-zA-Z0-9]+", normalized))
+        overlap = len(query_terms & terms)
+
+        if query_terms and overlap == 0:
+            continue
+
+        excerpt = segment[:240].rstrip()
+        if len(segment) > 240:
+            excerpt += "..."
+
+        candidates.append((overlap, excerpt))
+
+    candidates.sort(key=lambda item: item[0], reverse=True)
+
+    return [
+        excerpt
+        for _, excerpt in candidates[:max_insights]
+    ]
+
     if value is None or isinstance(value, bool):
         return False
     try:
@@ -220,6 +281,27 @@ with tab_discover:
                     if isinstance(description, str) and description.strip():
                         with st.expander("Product details"):
                             st.write(description)
+
+
+                    review_text = product.get("review_text", "")
+                    search_query = st.session_state.get("shopwise_query", "")
+
+                    review_insights = get_review_insights(
+                        review_text,
+                        query=search_query,
+                    )
+
+                    if review_insights:
+                        with st.expander("Review insights"):
+                            st.caption(
+                                "Relevant excerpts from the available review text. "
+                                "These are not verified individual reviews."
+                            )
+                            for insight in review_insights:
+                                st.write(f"• {insight}")
+                    else:
+                        st.caption("No relevant review excerpts found for this search.")
+
                     explanation = product.get("explanation")
                     if explanation:
                         st.caption(str(explanation))
@@ -234,9 +316,20 @@ with tab_discover:
                         )
 
                 with right:
+
                     score = product.get("recommendation_score")
                     if is_valid_number(score):
-                        st.metric("Match score", f"{float(score):.3f}")
+                        st.metric(
+                            "Rec. score",
+                            f"{float(score):.3f}",
+                            help=(
+                                "Weighted ranking score, not a probability. With a search "
+                                "query: 75% search relevance and 25% normalized rating. "
+                                "Without a query: normalized rating alone. Higher scores "
+                                "rank more favorably within this recommendation system."
+                            ),
+                        )
+
                     image_url = product.get("img_link")
                     image_data = fetch_product_image(image_url)
 
@@ -275,11 +368,134 @@ with tab_compare:
                 try:
                     comparison = engine.compare(selected_ids)
 
+
+                    # ShopWise Decision Snapshot
+                    snapshot = build_decision_snapshot(comparison)
+
+                    def _display_product_name(name, limit=48):
+                        """Create a compact display name without changing source data."""
+                        name = str(name or "Unnamed product")
+                        name = name.split("|")[0].strip()
+                        if len(name) > limit:
+                            return name[: limit - 3].rstrip() + "..."
+                        return name
+
+                    st.markdown("### ShopWise Decision Snapshot")
+                    st.caption(
+                        "Compare the essentials first. Explore the full specifications below."
+                    )
+
+                    cheapest = snapshot["lowest_price"]
+                    highest_rated = snapshot["highest_rated"]
+
+                    # Product highlights
+                    price_col, rating_col = st.columns(2, gap="medium")
+
+                    with price_col:
+                        with st.container(border=True):
+                            st.markdown("**LOWEST PRICE**")
+
+                            if cheapest:
+                                for product in cheapest:
+                                    st.markdown(
+                                        f"**{_display_product_name(product['product_name'])}**"
+                                    )
+                                    st.metric(
+                                        label="Current price",
+                                        value=(
+                                            f"₹{float(product['discounted_price_inr']):,.0f}"
+                                        ),
+                                    )
+                                st.caption("Best for shoppers prioritizing price.")
+                            else:
+                                st.caption("Price information unavailable.")
+
+                    with rating_col:
+                        with st.container(border=True):
+                            st.markdown("**HIGHEST RATED**")
+
+                            if highest_rated:
+                                for product in highest_rated:
+                                    st.markdown(
+                                        f"**{_display_product_name(product['product_name'])}**"
+                                    )
+                                    st.metric(
+                                        label="Customer rating",
+                                        value=f"{float(product['rating']):.1f} / 5",
+                                    )
+                                st.caption("Highest listed rating among your selections.")
+                            else:
+                                st.caption("Rating information unavailable.")
+
+
+                    # Concise, tie-aware buying guidance
+                    if cheapest and highest_rated:
+
+                        def _product_key(product):
+                            product_id = product.get("product_id")
+                            if product_id is not None and str(product_id).strip():
+                                return ("id", str(product_id).strip())
+
+                            return (
+                                "name",
+                                str(product.get("product_name") or "").strip(),
+                            )
+
+                        cheapest_keys = {
+                            _product_key(product) for product in cheapest
+                        }
+                        highest_keys = {
+                            _product_key(product) for product in highest_rated
+                        }
+
+                        shared_leaders = cheapest_keys & highest_keys
+
+                        if shared_leaders:
+                            if len(cheapest) == 1 and len(highest_rated) == 1:
+                                st.success(
+                                    "The same product has both the lowest "
+                                    "price and the highest listed rating."
+                                )
+                            else:
+                                st.success(
+                                    "At least one product shares both the "
+                                    "lowest-price and highest-rating positions."
+                                )
+                        else:
+                            st.info(
+                                "The lowest-price and highest-rated products "
+                                "differ. Compare their specifications and "
+                                "decide whether the price difference is worth it."
+                            )
+
+                    elif cheapest:
+                        st.info(
+                            "A lowest-price option is available, but there "
+                            "isn't enough valid rating data to identify a "
+                            "highest-rated option."
+                        )
+
+                    elif highest_rated:
+                        st.info(
+                            "A highest-rated option is available, but there "
+                            "isn't enough valid price data to identify a "
+                            "lowest-price option."
+                        )
+
+                    else:
+                        st.info(
+                            "There isn't enough valid price or rating data "
+                            "to identify either leader."
+                        )
+
+                    st.divider()
+
+
                     fields = {
                         "Product": "product_name",
                         "Price (INR)": "discounted_price_inr",
                         "Actual price (INR)": "actual_price_inr",
-                        "Rating": "rating",
+                        "Rating (/5)": "rating",
                         "Discount (%)": "discount_percentage",
                         "Description": "about_product",
                     }
@@ -289,6 +505,7 @@ with tab_compare:
                         for label, column in fields.items()
                         if column in comparison.columns
                     }
+
                     table = comparison[
                         list(available_fields.values())
                     ].rename(
@@ -299,6 +516,9 @@ with tab_compare:
                     )
 
                     if "Product" in table.columns:
+                        table["Product"] = table["Product"].apply(
+                            lambda name: _display_product_name(name, limit=36)
+                        )
                         table = table.set_index("Product").T
 
                     st.dataframe(
@@ -354,6 +574,194 @@ with tab_alternatives:
                         "No similar alternatives found under those constraints."
                     )
                 else:
+
+                    # ShopWise Alternative Insights
+                    source_rows = results[
+                        results["product_id"].astype(str)
+                        == str(choices[selected_label])
+                    ]
+
+                    source = (
+                        source_rows.iloc[0]
+                        if not source_rows.empty
+                        else None
+                    )
+
+
+                    def _valid_metric(value):
+                        if value is None or isinstance(value, bool):
+                            return False
+
+                        try:
+                            number = float(value)
+                            return (
+                                number == number
+                                and abs(number) != float("inf")
+                            )
+                        except (TypeError, ValueError, OverflowError):
+                            return False
+
+                    def _short_name(name, limit=42):
+                        name = str(name or "Unnamed product").split("|")[0].strip()
+                        return name if len(name) <= limit else name[:limit - 3].rstrip() + "..."
+
+                    st.markdown("### ShopWise Alternative Insights")
+                    st.caption(
+                        "Compare the lowest-priced option, the closest text match, "
+                        "and the highest-rated option among the returned alternatives. "
+                        "The cards rank each criterion separately; the table is ranked "
+                        "by the overall alternative score."
+                    )
+                    budget_pick = None
+                    if "discounted_price_inr" in alternatives.columns:
+                        priced = alternatives[
+                            alternatives["discounted_price_inr"].apply(
+                                lambda value: _valid_metric(value)
+                                and float(value) >= 0
+                            )
+                        ]
+                        if not priced.empty:
+                            budget_pick = priced.sort_values(
+                                ["discounted_price_inr", "product_id"],
+                                ascending=[True, True],
+                                kind="stable",
+                            ).iloc[0]
+
+                    closest_match = None
+                    if "similarity_score" in alternatives.columns:
+                        similar = alternatives[
+                            alternatives["similarity_score"].apply(
+                                _valid_metric
+                            )
+                        ]
+                        if not similar.empty:
+                            closest_match = similar.sort_values(
+                                ["similarity_score", "product_id"],
+                                ascending=[False, True],
+                                kind="stable",
+                            ).iloc[0]
+
+                    rating_pick = None
+                    if "rating" in alternatives.columns:
+                        rated = alternatives[
+                            alternatives["rating"].apply(
+                                lambda value: _valid_metric(value)
+                                and 0 <= float(value) <= 5
+                            )
+                        ]
+                        if not rated.empty:
+                            rating_pick = rated.sort_values(
+                                ["rating", "product_id"],
+                                ascending=[False, True],
+                                kind="stable",
+                            ).iloc[0]
+
+                    insight_cols = st.columns(3, gap="small")
+
+                    with insight_cols[0]:
+                        with st.container(border=True):
+                            st.markdown("**LOWEST-PRICED ALTERNATIVE**")
+                            if budget_pick is not None:
+                                st.markdown(
+                                    f"**{_short_name(budget_pick['product_name'])}**"
+                                )
+                                st.metric(
+                                    "Price",
+                                    f"₹{float(budget_pick['discounted_price_inr']):,.0f}",
+                                )
+
+                                if source is not None and _valid_metric(
+                                    source.get("discounted_price_inr")
+                                ):
+                                    source_price = float(
+                                        source["discounted_price_inr"]
+                                    )
+                                    candidate_price = float(
+                                        budget_pick["discounted_price_inr"]
+                                    )
+                                    difference = source_price - candidate_price
+
+
+                                    if difference > 0:
+                                        st.caption(
+                                            f"₹{difference:,.0f} less than the selected product."
+                                        )
+                                    elif difference < 0:
+                                        st.caption(
+                                            f"₹{abs(difference):,.0f} more than the selected product."
+                                        )
+
+                                    else:
+                                        st.caption(
+                                            "Same listed price as the selected product."
+                                        )
+                                else:
+                                    st.caption(
+                                        "Selected product price unavailable for comparison."
+                                    )
+                            else:
+                                st.caption("No valid alternative prices available.")
+
+                    with insight_cols[1]:
+                        with st.container(border=True):
+                            st.markdown("**HIGHEST TEXT SIMILARITY**")
+                            if closest_match is not None:
+                                st.markdown(
+                                    f"**{_short_name(closest_match['product_name'])}**"
+                                )
+                                st.metric(
+                                    "Text similarity",
+                                    f"{float(closest_match['similarity_score']):.2f}",
+                                )
+                                st.caption(
+                                    "Highest text similarity among returned alternatives."
+                                )
+                            else:
+                                st.caption("Similarity information unavailable.")
+
+                    with insight_cols[2]:
+                        with st.container(border=True):
+                            st.markdown("**HIGHEST RATED**")
+                            if rating_pick is not None:
+                                st.markdown(
+                                    f"**{_short_name(rating_pick['product_name'])}**"
+                                )
+                                st.metric(
+                                    "Listed rating",
+                                    f"{float(rating_pick['rating']):.1f} / 5",
+                                )
+
+                                if (
+                                    source is not None
+                                    and _valid_metric(source.get("rating"))
+                                    and 0 <= float(source["rating"]) <= 5
+                                ):
+                                    rating_difference = (
+                                        float(rating_pick["rating"])
+                                        - float(source["rating"])
+                                    )
+                                    if rating_difference > 0:
+                                        st.caption(
+                                            f"{rating_difference:.1f} points above the selected product."
+                                        )
+                                    elif rating_difference < 0:
+                                        st.caption(
+                                            f"{abs(rating_difference):.1f} points below the selected product."
+                                        )
+                                    else:
+                                        st.caption(
+                                            "Same listed rating as the selected product."
+                                        )
+                                else:
+                                    st.caption(
+                                        "Selected product rating unavailable for comparison."
+                                    )
+                            else:
+                                st.caption("No valid alternative ratings available.")
+
+                    st.divider()
+
+
                     desired_columns = [
                         "product_name",
                         "discounted_price_inr",
@@ -361,6 +769,7 @@ with tab_alternatives:
                         "similarity_score",
                         "alternative_score",
                     ]
+
                     display = alternatives[
                         [
                             column
@@ -377,42 +786,46 @@ with tab_alternatives:
                         }
                     ).copy()
 
+                    column_config = {}
+
                     if "Product" in display.columns:
-                        display["Product"] = (
-                            display["Product"]
-                            .astype(str)
-                            .str.slice(0, 76)
-                            .where(
-                                display["Product"].astype(str).str.len() <= 76,
-                                display["Product"].astype(str).str.slice(0, 73) + "...",
-                            )
+                        column_config["Product"] = st.column_config.TextColumn(
+                            "Product",
+                            help="Full product name. Hover over a cell to inspect its contents.",
+                            width="medium",
                         )
 
-                    column_config = {}
                     if "Price (INR)" in display.columns:
                         column_config["Price (INR)"] = (
                             st.column_config.NumberColumn(
                                 "Price (INR)",
                                 format="INR %.0f",
+                                width="small",
                             )
                         )
+
                     if "Rating" in display.columns:
                         column_config["Rating"] = st.column_config.NumberColumn(
                             "Rating",
                             format="%.1f",
+                            width="small",
                         )
+
                     if "Text similarity" in display.columns:
                         column_config["Text similarity"] = (
                             st.column_config.NumberColumn(
                                 "Text similarity",
                                 format="%.2f",
+                                width="small",
                             )
                         )
+
                     if "Alternative score" in display.columns:
                         column_config["Alternative score"] = (
                             st.column_config.NumberColumn(
                                 "Alternative score",
                                 format="%.2f",
+                                width="small",
                             )
                         )
 
@@ -424,9 +837,12 @@ with tab_alternatives:
                     )
 
                     st.caption(
-                        "Similarity scores use product text and price proximity; "
-                        "they do not guarantee equivalent features."
+                        "Similarity scores compare product text, while the "
+                        "alternative score combines text similarity and price "
+                        "proximity when the selected product has a valid price. "
+                        "Neither score guarantees equivalent features."
                     )
+
 
             except (ValueError, KeyError, RuntimeError) as exc:
                 st.error(f"Unable to find alternatives: {exc}")
