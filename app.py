@@ -864,3 +864,28 @@ st.caption(
     "descriptions may be outdated or inaccurate. Verify details on the "
     "seller's page before purchasing."
 )
+
+with st.expander("Data Sources & Licensing"):
+    st.markdown(
+        """
+        **Source:** [Amazon Sales Dataset on Kaggle](https://www.kaggle.com/datasets/karkavelrajaj/amazon-sales-dataset)
+
+        **Dataset creator listed on the source page:** Karkavelraja J.
+
+        **Stated dataset licence:** [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/)
+
+        **Changes made:** The project selects the Computers & Accessories
+        category, consolidates repeated product identifiers, normalizes
+        price and rating fields, and generates product and review-source
+        audit files.
+
+        **Data limitations and rights:** Prices, ratings, descriptions,
+        reviews, images, and links may be outdated or inaccurate. The
+        dataset licence may not cover every third-party element or resolve
+        all applicable rights. Those rights have not been independently
+        verified. This project does not imply endorsement by Kaggle, the
+        dataset creator, or Amazon.
+
+        This project is intended as a noncommercial portfolio demonstration.
+        """
+    )
